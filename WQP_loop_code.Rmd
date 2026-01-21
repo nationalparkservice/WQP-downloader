@@ -1,0 +1,1494 @@
+---
+title: "WQP Download Code"
+---
+
+# You likely don't need to run all these parts, so pick and choose which to run. Click on the first chunk in the section you want and click "Run all chunks below" under the run dropdown in the upper right corner of this window to run just that part.
+
+# USGS dataRetrieval package status: https://doi-usgs.github.io/dataRetrieval/articles/Status.html#wqp
+## as of 8/5/25, post-March 2024 discrete data is largely missing as WQP migrates off of beta version
+
+------------------------------------
+
+# ALWAYS RUN THIS FIRST
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(root.dir = "~/WQP Code", echo = TRUE)
+library(tidyverse)
+library(dataRetrieval)
+library(terra)
+library(tidyterra)
+library(sf)
+
+# API code for users pulling lots of information; see more: https://doi-usgs.github.io/dataRetrieval/articles/Status.html#api-keys
+# comment out if not using, but might run into HTTP 429 Too Many Requests error
+API_USGS_PAT = "ADD CODE HERE"
+# NPS boundary shp
+nps_boundary <- vect("data_input/Administrative_Boundaries of_National Park_System_Units/Administrative Boundaries of National Park System Units.shp")
+
+# dissolving same UNIT_CODES together for ease of use
+nps_boundary <- nps_boundary %>% 
+  mutate(UNIT_NAME = ifelse(UNIT_CODE == "ANIA", "Aniakchak National Monument & Preserve", UNIT_NAME),
+         UNIT_NAME = ifelse(UNIT_CODE == "DENA", "Denali National Park & Preserve", UNIT_NAME),
+         UNIT_NAME = ifelse(UNIT_CODE == "GAAR", "Gates Of The Arctic National Park & Preserve", UNIT_NAME),
+         UNIT_NAME = ifelse(UNIT_CODE == "GLBA", "Glacier Bay National Park & Preserve", UNIT_NAME),
+         UNIT_NAME = ifelse(UNIT_CODE == "GRSA", "Great Sand Dunes National Park & Preserve", UNIT_NAME),
+         UNIT_NAME = ifelse(UNIT_CODE == "KATM", "Katmai National Park & Preserve", UNIT_NAME),
+         UNIT_NAME = ifelse(UNIT_CODE == "LACL", "Lake Clark National Park & Preserve", UNIT_NAME),
+         UNIT_NAME = ifelse(UNIT_CODE == "WRST", "Wrangell - St Elias National Park & Preserve", UNIT_NAME))
+
+nps_boundary <- as_sf(nps_boundary)
+nps_boundary <- st_transform(nps_boundary, 4326)
+nps_boundary <- as_spatvector(nps_boundary)
+nps_boundary <- aggregate(nps_boundary, by = c("UNIT_CODE", "UNIT_NAME"), dissolve = TRUE) 
+
+# updated park unit/network list from me based on: https://irma.nps.gov/Portal/Units/Search (Unit Type: Network; include linked units in your search) and https://rivers.gov/apps/river-miles
+networks_parks <- read_csv("data_input/NPS_IMD_units_WSRs_NetworksOnly.csv", show_col_types = FALSE, col_select = -1)
+nps_boundary <- tidyterra::left_join(nps_boundary, networks_parks, join_by(UNIT_CODE, UNIT_NAME))
+
+# WSR polygons from rivers.gov / USFS; edited to only include NPS-related WSRs
+NPS_WSR_poly_vect <- vect("data_input/NPS_WSRs_poly/NPS_WSRs_poly.shp") %>% 
+  rename(NetworkCode = NetworkCod,
+         NetworkName = NetworkNam,
+         Linked_UNIT_CODE = LINKED_UN0,
+         Linked_UNIT_NAME = LINKED_UN1)
+
+# all NPS units (from the original nps_boundary file) + all NPS-associated WSRs
+nps_boundary_WSRs <- nps_boundary %>% 
+  rbind(NPS_WSR_poly_vect) %>% 
+  distinct() %>% 
+  mutate(OBJECTID = dplyr::row_number()) %>% 
+  select(OBJECTID, everything()) %>% 
+  arrange(OBJECTID)
+
+# IMD parks + IMD-associated WSRs only
+IMD_parks_WSRs <- nps_boundary_WSRs %>% 
+  filter(UNIT_CODE %in% networks_parks$UNIT_CODE) %>%
+  arrange(NetworkCode)
+
+# network and park information updating/editing
+networks <- IMD_parks_WSRs %>% 
+  as_tibble() %>% 
+  filter(!is.na(NetworkCode)) %>% 
+  select(NetworkCode, NetworkName) %>% 
+  arrange(NetworkCode) %>% 
+  distinct()
+
+network_codes <- networks$NetworkCode
+
+parks <- nps_boundary_WSRs %>%
+  as_tibble() %>% 
+  select(UNIT_CODE, UNIT_NAME) %>% 
+  distinct()
+
+park_codes <- parks$UNIT_CODE %>% 
+  unique()
+
+# CRS lookup from me; append additional CRS EPSGs to this file if necessary
+crs_lookup <- read_csv("data_input/crs_lookup.csv", show_col_types = FALSE)
+
+# removing unused files
+rm(nps_boundary, NPS_WSR_poly_vect)
+```
+
+------------------------------------
+
+# Which parts do I need to run?
+### Part 1: You have a list/table of ProjectIDs and need to get site information (Location_Identifiers) from it.
+
+### Part 2: You have a list/table of Location_Identifiers and need to get results from it.
+
+### Part 3: You have a list/table of NPS unit codes and need to get site information (Location_Identifiers) from within those boundaries.
+
+### Part 4: You have a list/table of IMD networks and need to get site information (Location_Identifiers) from within the boundaries of all of their parks.
+
+### Part 5: You have a table of results from the WQP (including the required columns: Location_Identifier, Location_Longitude, Location_Latitude, and Location_HorzCoordReferenceSystemDatum) and need to ensure that the coordinate system is standard across all results. SEE note before running part 5.
+
+### Part 6: You have a table of results from the WQP that have been updated to ensure a consistent coordinate system is being used and need to determine which park units and IMD networks each site is associated with. SEE WARNING BEFORE PART 6.
+
+### Part 7: You have a list of OrganizationIDs and need to get Location_Identifiers from it.
+
+-------------------------------------
+
+# After running each chunk, an "error" will appear telling you the section is done; it is not actually an error, just a way of stopping the code from continuing to run.
+
+
+
+# Part 1: Start here if you only have a list of projectIDs and need to get Location_Identifiers from it
+```{r 1.1}
+# import data with ProjectIDs here
+projects_data_input <- read_csv("data_input/IMD_Network_Projects_2-2025.csv", show_col_types = FALSE, col_select = -1) %>% 
+  distinct()
+
+# create list of Project_Identifiers - check column formatting, it changes in WQX3/ water quality portal beta
+wqx3_check <- "Project_Identifier" %in% names(projects_data_input)
+
+if (isTRUE(wqx3_check)){
+  list_of_project_ids <- projects_data_input$Project_Identifier %>% 
+    unique()
+} else{
+  list_of_project_ids <- projects_data_input$ProjectID %>% 
+    unique()
+}
+
+# change this to TRUE or FALSE if you do/do not want to save the output from Part 1
+p1_save <- FALSE
+```
+
+```{r 1.2}
+projects_data_output <- tibble()
+
+# counter to see what project you're on
+num = 1
+
+# Retrieve WQP site information on a loop
+for (proj in list_of_project_ids){
+  print(paste0("ProjectID: ", proj, "; Project Number: ", num, "/", length(list_of_project_ids)))
+  add_proj <- whatWQPsites(project = proj, convertType = FALSE, legacy = FALSE)
+  projects_data_output <- plyr::rbind.fill(projects_data_output, add_proj) %>% 
+  distinct()
+  num = num+1
+}
+
+# updates datatypes for columns like dates
+projects_data_output <- parse_WQP(projects_data_output) %>% 
+  filter(!is.na(Location_Latitude) | !is.na(Location_Longitude)) %>% 
+  select(where(~!all(is.na(.x))))
+```
+
+```{r 1.3}
+# datetime for saving files
+current_datetime <- format(Sys.time(), "%d-%b-%Y-%H%M%S")
+
+# p1 save format
+p1_filename <- paste0("data_output/P1-projects_data_output-", current_datetime, ".csv")
+
+if (isFALSE(p1_save)){
+} else {
+  write.csv(projects_data_output, p1_filename)
+}
+```
+
+```{r 1.4, message=FALSE, warning=FALSE, include=FALSE}
+stop("Part 1 complete")
+```
+
+
+# Part 2: Start here if you already have a list of Location_Identifiers
+### make sure to change list_of_project_ids to NULL if you are NOT using ProjectIDs to pull/filter data
+```{r 2.1}
+# add df with Location_Identifiers here, OR if carrying on from Part 1, set to projects_data_output
+monitoringlocoid_data_input <- read_csv("data_input/subset_TEST_site_list.csv", col_select = -1, show_col_types = FALSE) %>%
+  distinct()
+
+# monitoringlocoid_data_input <- projects_data_output %>%
+#   distinct()
+
+# monitoringlocoid_data_input <- output_within_IMD_boundary %>%
+#   distinct()
+
+# are you using ProjectIDs? set projectID list here, or if NOT using ProjectIDs, use NULL
+# list_of_project_ids <- list_of_project_ids
+list_of_project_ids <- NULL
+
+# create list of Location_Identifiers - check column formatting, it changes in WQX3/ water quality portal beta
+wqx3_check <- "Location_Identifier" %in% names(monitoringlocoid_data_input)
+
+if (isTRUE(wqx3_check)){
+  list_of_monitoringids <- monitoringlocoid_data_input$Location_Identifier %>% 
+    unique()
+} else{
+  list_of_monitoringids <- monitoringlocoid_data_input$MonitoringLocationIdentifier %>% 
+    unique()
+}
+
+# change this to TRUE or FALSE if you do/do not want to save the output from Part 2
+p2_save <- FALSE
+```
+
+```{r 2.2}
+# sample() is optional; randomizes the order of the list. In my experience, this helps even out the number of rows each output group contains for large data pulls. Should not affect output in any negative way.
+list_of_monitoringids <- list_of_monitoringids %>%
+  sample()
+
+# For large data pulls this breaks the output into different chunks to prevent long loading times. Group size is set to 100 by default as I felt this is a sweet spot between too few and too many rows, but you can try adjusting this number. After 100 MonitoringLocationIDs are processed, it will start a new group.
+group_size_monitoringids <- 150
+group_of_monitoringids <- split(list_of_monitoringids, ceiling(seq_along(list_of_monitoringids) / group_size_monitoringids))
+```
+
+```{r 2.3}
+# pulls fake site as an easy way of copying the blank dataframe with all the necessary columns
+# initial_add <- tibble(readWQPqw(siteNumbers = "11NPSWRD_WQX-SEQU_S500", "", convertType = FALSE, legacy = TRUE))
+initial_add <- tibble(readWQPdata(siteid = "FAKE", characteristicName = "", convertType = FALSE, service = "ResultWQX3", dataProfile = "narrow"))
+
+initial_add_site_info <- tibble(whatWQPsites(siteid = "FAKE", convertType = FALSE, legacy = FALSE))
+
+# output_add <- plyr::rbind.fill(initial_add, initial_add_site_info)
+
+# counters to see what site/group you're on. useful if one site throws an error
+total_site_num = 1
+site_group_num = 1
+site_group_place_num = 1
+```
+
+```{r 2.4}
+# Retrieve WQP data on a loop when you start with Location_Identifiers
+
+# Note if a site throws an error during a large data pull: Since the data is broken up into groups, if, for example, group 11 has an invalid site that stops the code, groups 1-10 are still fine to use. You can fix the issue with that site/filter it out from group_of_monitoringids, and then restart the loop by changing the 1 to an 11 in the top line: group_of_monitoringids[11:length(group_of_monitoringids)])
+ # However, if you rerun parts 2.1, 2.2, or 2.3, you need to start over from the beginning since the data will be re-randomized and the counters will be reset. Consider commenting out sample() during testing if sites are throwing errors
+
+for (site_group in group_of_monitoringids){
+  add_site <- initial_add
+  add_site_info <- initial_add_site_info
+  
+  output_add_join <- tibble()
+  output_add <- tibble()
+  output_add_site_info <- tibble()
+  
+  for (site in site_group){
+    print(paste0("Total site number: ", total_site_num, "/", length(list_of_monitoringids),
+                 "; Site group: ", site_group_num, "/", length(group_of_monitoringids),
+                 "; Within site group number: ", site_group_place_num, "/", length(site_group),
+                 "; Location_Identifier: ", site))
+    
+    add_site <- readWQPdata(siteid = site, characteristicName = "", convertType = FALSE, service = "ResultWQX3", dataProfile = "narrow") %>% 
+      distinct()
+    output_add <- rbind(output_add, add_site) %>%
+      distinct()
+    
+    add_site_info <- whatWQPsites(siteid = site, convertType = FALSE, legacy = FALSE) %>% 
+      distinct()
+    output_add_site_info <- rbind(output_add_site_info, add_site_info) %>% 
+      distinct()
+    
+    total_site_num = total_site_num+1
+    site_group_place_num = site_group_place_num+1
+  }
+  output_add_join <- left_join(output_add, output_add_site_info) %>% 
+    distinct()
+
+  df_name <- paste0("output_site_group_", site_group_num)
+  assign(df_name, output_add_join, envir = .GlobalEnv)
+  site_group_num = site_group_num+1
+  site_group_place_num = 1
+}
+```
+
+```{r 2.5}
+# rebinding the groups together; removing duplicates
+output_add_list <- list()
+total_site_groups <- site_group_num - 1 
+
+for (i in 1:total_site_groups) {
+  df_name <- paste0("output_site_group_", i)
+  output_add_list[[i]] <- get(df_name)
+}
+
+monitoringlocoid_data_output <- bind_rows(output_add_list) %>% 
+  distinct()
+  
+monitoringlocoid_data_output <- parse_WQP(monitoringlocoid_data_output)
+  
+monitoringlocoid_data_output <- monitoringlocoid_data_output %>%
+  select(where(~!all(is.na(.x)))) %>% 
+  distinct()
+
+monitoringlocoid_data_output <- monitoringlocoid_data_output %>% 
+  mutate(Project_Identifier = str_split_i(Project_Identifier, pattern = '"', i = 2)) %>% 
+  distinct()
+
+monitoringlocoid_data_output %>% 
+  select(Project_Identifier) %>% 
+  unique()
+```
+
+```{r 2.6}
+# If this returns NULL, you are good! Otherwise, any results here may indicate an invalid or empty Location_Identifier in your list. Ignore this if you're fine with not including these locations. Many of these sites can be fixed if mutated to correct the Location_Identifier. Check if site can be found online: https://www.waterqualitydata.us/provider/STORET/ 
+
+if (isTRUE(wqx3_check)){
+  if (nrow(monitoringlocoid_data_input %>% 
+           filter(!Location_Identifier %in% c(monitoringlocoid_data_output$Location_Identifier))) != 0){
+    nrow(monitoringlocoid_data_input %>% 
+         filter(!Location_Identifier %in% c(monitoringlocoid_data_output$Location_Identifier))) != 0
+  } else{
+    }
+  } else{
+    if (nrow(monitoringlocoid_data_input %>% 
+              filter(!MonitoringLocationIdentifier %in% c(monitoringlocoid_data_output$Location_Identifier))) != 0){
+      nrow(monitoringlocoid_data_input %>% 
+           filter(!MonitoringLocationIdentifier %in% c(monitoringlocoid_data_output$Location_Identifier))) != 0
+    } else{
+    }
+  }
+```
+
+```{r 2.7}
+# refiltering the data to ensure only records from the intended projectID are included (skips if not working with projects)
+if (!is.null(list_of_project_ids)){
+  monitoringlocoid_data_output <- monitoringlocoid_data_output %>% 
+    filter(Project_Identifier %in% list_of_project_ids)
+} else{
+}
+
+monitoringlocoid_data_output <- monitoringlocoid_data_output %>%
+  select(where(~!all(is.na(.x)))) %>% 
+  distinct()
+
+monitoringlocoid_data_output %>% 
+  select(Location_HorzCoordStandardizedDatum) %>% 
+  unique()
+```
+
+```{r 2.8}
+# datetime for saving files
+current_datetime <- format(Sys.time(), "%d-%b-%Y-%H%M%S")
+
+# p2 save format
+p2_filename <- paste0("data_output/P2-monitoringlocoid_data_output-", current_datetime, ".csv")
+
+if (isFALSE(p2_save)){
+} else {
+  write.csv(monitoringlocoid_data_output, p2_filename)
+}
+```
+
+```{r 2.8, message=FALSE, warning=FALSE, include=FALSE}
+stop("Part 2 complete")
+``` 
+
+
+# Part 3: Start here if you want to extract sites from park unit boundaries
+### Note: This only includes those within nps_boundary_WSRs, which is a combination of IRMA nps_boundaries and Wild and Scenic River boundaries. Many unit codes are not included in this, or are combined together (e.g., NACA (National Captial Area Parks))—if you know R, this section can be used as a base for using your own/custom shapefiles.
+
+```{r 3.1}
+# view list of UNIT_CODES you can choose from
+# nps_boundary_WSRs %>%
+#   as_tibble() %>%
+#   select(UNIT_CODE, UNIT_NAME, NetworkCode, NetworkName)
+
+# insert list of desired NPS unit codes here
+list_of_parks <- c("ROMO", "APPA", "PORE") %>% 
+  unique()
+
+# change this to TRUE or FALSE if you do/do not want only NPS data
+nps_only <- TRUE
+
+# enter distance in METERS or NULL if no buffer wanted. This buffer will apply to each of the NPS codes inserted
+p3_buffer <- NULL
+
+# change this to TRUE or FALSE if you do/do not want to save the output from Part 3
+p3_save <- FALSE
+
+# insert what CRS you want all the data to be converted into (default is WGS84)
+target_crs <- "WGS84"
+
+target_epsg <- crs_lookup %>% 
+  filter(crs_name == target_crs)
+
+target_epsg <- target_epsg$crs_epsg
+```
+
+```{r 3.2}
+list_of_park_exts <- tibble()
+list_of_park_exts$bbox_str <- ""
+list_of_park_exts$UNIT_CODE <- ""
+list_of_park_exts$UNIT_NAME <- ""
+add_ext <- ext()
+
+list_of_park_boundaries <- IMD_parks_WSRs %>% 
+  filter(UNIT_CODE %in% list_of_parks)
+
+if (is.null(p3_buffer)){
+  for (x in 1:nrow(list_of_park_boundaries)){
+    UNIT_CODE <- list_of_park_boundaries$UNIT_CODE[x]
+    UNIT_NAME <- list_of_park_boundaries$UNIT_NAME[x]
+    print(paste0("Unit Code: ", UNIT_CODE, " ", x, "/", nrow(list_of_park_boundaries)))
+    row <- list_of_park_boundaries[x]
+    add_ext <- ext(row)
+    xmin <- add_ext$xmin %>% as.vector()
+    ymin <- add_ext$ymin %>% as.vector()
+    xmax <- add_ext$xmax %>% as.vector()
+    ymax <- add_ext$ymax %>% as.vector()
+    # xmin, ymin, xmax, ymax / west, south, east, north
+    bbox_str <- paste(xmin, ymin, xmax, ymax, sep = ",")
+    list_of_park_exts <- add_row(list_of_park_exts, UNIT_CODE, UNIT_NAME, bbox_str) %>% 
+      distinct()
+  }
+} else{
+  list_of_buffered_park_boundaries <- vect()
+  crs(list_of_buffered_park_boundaries) <- target_epsg
+  for (y in 1:nrow(list_of_park_boundaries)){
+    UNIT_CODE <- list_of_park_boundaries$UNIT_CODE[y]
+    UNIT_NAME <- list_of_park_boundaries$UNIT_NAME[y]
+    print(paste0("Buffering Unit Code: ", UNIT_CODE, " ", y, "/", nrow(list_of_park_boundaries)))
+    boundary_add <- buffer(list_of_park_boundaries[y], p3_buffer)
+    add_ext <- ext(boundary_add)
+    xmin <- add_ext$xmin %>% as.vector()
+    ymin <- add_ext$ymin %>% as.vector()
+    xmax <- add_ext$xmax %>% as.vector()
+    ymax <- add_ext$ymax %>% as.vector()
+    # xmin, ymin, xmax, ymax / west, south, east, north
+    bbox_str <- paste(xmin, ymin, xmax, ymax, sep = ",")
+    list_of_park_exts <- add_row(list_of_park_exts, UNIT_CODE, UNIT_NAME, bbox_str) %>% 
+      distinct()
+    list_of_buffered_park_boundaries <- rbind(list_of_buffered_park_boundaries, boundary_add)
+  }
+}
+```
+  
+```{r 3.3}  
+sites_by_ext <- tibble(whatWQPsites(project = "TEST", convertType = FALSE, legacy = FALSE)) %>% 
+  slice(-1:-10000)
+
+sites_by_ext$UNIT_CODE <- ""
+sites_by_ext$UNIT_NAME <- ""
+
+add_sites_by_ext <- sites_by_ext
+
+# bBox needs to be in xmin, ymin, xmax, ymax / west, south, east, north format
+# pulling WQP data based on bounding box
+
+for (row in 1:nrow(list_of_park_exts)){
+  UNIT_CODE <- list_of_park_exts$UNIT_CODE[row]
+  print(paste0("Unit Code ", UNIT_CODE, " ", row, "/", nrow(list_of_park_exts)))
+  
+  UNIT_NAME <- list_of_park_exts$UNIT_NAME[row]
+  
+  if (isFALSE(nps_only)){
+    add_sites_by_ext <- whatWQPsites(bBox = list_of_park_exts$bbox_str[row],
+                                     #organization = "11NPSWRD_WQX",
+                                     convertType = FALSE,
+                                     legacy = FALSE) %>% 
+      distinct()
+    } else{
+      add_sites_by_ext <- whatWQPsites(bBox = list_of_park_exts$bbox_str[row],
+                                       organization = "11NPSWRD_WQX",
+                                       convertType = FALSE,
+                                       legacy = FALSE) %>% 
+        distinct()
+  }
+  sites_by_ext <- add_row(sites_by_ext, UNIT_CODE, UNIT_NAME, add_sites_by_ext) %>% 
+    distinct()
+}
+
+sites_by_ext <- parse_WQP(sites_by_ext)
+
+sites_by_ext <- sites_by_ext %>% 
+  filter(!is.na(Location_Latitude) | !is.na(Location_Longitude))
+```
+
+```{r 3.4}
+# will have to use the best guess on these, but WGS84 seems to fit for the majority of these sites
+sites_by_ext <- sites_by_ext %>% 
+  tidyterra::mutate(Location_HorzCoordReferenceSystemDatum = ifelse(is.na(Location_HorzCoordReferenceSystemDatum) | Location_HorzCoordReferenceSystemDatum %in%
+                                                                      c("UNKWN", "Unknown", "OTHER"), "WGS84", Location_HorzCoordReferenceSystemDatum))
+
+crs_list <- sites_by_ext$Location_HorzCoordReferenceSystemDatum %>% 
+  unique()
+  
+crs_list
+```
+
+```{r 3.5}
+# converting CRS' (this is the same code as part 5)
+sites_by_ext_vect <- vect(sites_by_ext, geom = c("Location_Longitude", "Location_Latitude")) %>% 
+  na.omit(geom = TRUE)
+fixed_sites_by_ext_vect <- vect()
+crs(fixed_sites_by_ext_vect) <- target_epsg
+
+for (crs in crs_list){
+  sites_by_crs <- sites_by_ext_vect %>% 
+    filter(Location_HorzCoordReferenceSystemDatum == crs)
+  sites_by_crs_crs <- crs_lookup %>% 
+    filter(crs_name == crs)
+  sites_by_crs_crs <- sites_by_crs_crs$crs_epsg
+  crs(sites_by_crs) <- sites_by_crs_crs 
+  sites_by_crs <- as_sf(sites_by_crs)
+  sites_by_crs <- st_transform(sites_by_crs, target_epsg)
+  sites_by_crs <- as_spatvector(sites_by_crs)
+  sites_by_crs <- sites_by_crs %>% 
+    tidyterra::mutate(Location_HorzCoordReferenceSystemDatum = ifelse(Location_HorzCoordReferenceSystemDatum == crs, target_crs, crs))
+  fixed_sites_by_ext_vect <- rbind(fixed_sites_by_ext_vect, sites_by_crs) %>% 
+    distinct()
+}
+  
+fixed_sites_by_ext <- fixed_sites_by_ext_vect %>% 
+  as_tibble(geom = "XY") %>% 
+  distinct()
+
+park_list <- fixed_sites_by_ext_vect$UNIT_CODE %>% 
+  unique()
+```
+
+```{r 3.6}
+# cropping sites to park boundary
+output_by_boundary <- tibble()
+
+sites_by_park <- fixed_sites_by_ext_vect %>% 
+  select(-UNIT_CODE, -UNIT_NAME) %>% 
+  distinct()
+
+if (exists("list_of_buffered_park_boundaries")){
+  for (park in park_list){
+    sites_by_park_nps_boundary <- list_of_buffered_park_boundaries %>% 
+      filter(UNIT_CODE == park)
+    only_sites_within <- terra::intersect(sites_by_park, sites_by_park_nps_boundary)
+    only_sites_within <- only_sites_within %>% 
+      as_tibble(geom = "XY") %>% 
+      select(Location_Identifier) %>% 
+      distinct()
+    output_by_boundary <- rbind(output_by_boundary, only_sites_within) %>% 
+      distinct()
+  }
+} else{
+  for (park in park_list){
+    sites_by_park_nps_boundary <- list_of_park_boundaries %>% 
+      filter(UNIT_CODE == park)
+    only_sites_within <- terra::intersect(sites_by_park, sites_by_park_nps_boundary)
+    only_sites_within <- only_sites_within %>% 
+      as_tibble(geom = "XY") %>% 
+      select(Location_Identifier) %>% 
+      distinct()
+    output_by_boundary <- rbind(output_by_boundary, only_sites_within) %>% 
+      distinct()
+  }
+}
+
+output_within_boundary <- fixed_sites_by_ext %>% 
+  filter(Location_Identifier %in% output_by_boundary$Location_Identifier) %>% 
+  rename(Location_Longitude = x,
+         Location_Latitude = y) %>% 
+  select(where(~!all(is.na(.x)))) %>% 
+  distinct()
+
+output_within_boundary %>% 
+  group_by(UNIT_CODE) %>% 
+  count()
+```
+
+```{r 3.7}
+# datetime for saving files
+current_datetime <- format(Sys.time(), "%d-%b-%Y-%H%M%S")
+# p3 save format
+p3_filename <- paste0("data_output/P3-output_within_boundary-", current_datetime, ".csv")
+p3_filename_vect <- paste0("data_output/P3-output_within_boundary-shp/P3-output_within_boundary-", current_datetime, ".shp")
+
+if (isFALSE(p3_save)){
+} else {
+  write.csv(output_within_boundary, p3_filename)
+  dir.create("data_output/P3-output_within_boundary-shp", showWarnings = FALSE)
+  output_within_boundary %>%
+    vect(crs = target_epsg, geom = c("Location_Longitude", "Location_Latitude")) %>%
+    writeVector(filename = p3_filename_vect)
+}
+```
+
+```{r 3.8, message=FALSE, warning=FALSE, include=FALSE}
+stop("Part 3 complete")
+```
+
+# Part 4: Start here if you want to extract sites from park boundaries based on IMD network
+```{r 4.1}
+# insert list of NPS network codes
+list_of_networks <- c("SFAN", "PACN") %>% 
+  unique()
+
+# enter distance in METERS or NULL if no buffer wanted. This buffer will apply to each of the NPS codes inserted
+p4_buffer <- NULL
+
+# change this to TRUE or FALSE if you do/do not want only NPS data
+nps_only <- TRUE
+
+# change this to TRUE or FALSE if you do/do not want to save the output from Part 4
+p4_save <- FALSE
+
+# insert what CRS you want all the data to be converted into
+target_crs <- "WGS84"
+
+target_epsg <- crs_lookup %>% 
+  filter(crs_name == target_crs)
+
+target_epsg <- target_epsg$crs_epsg
+```
+
+```{r 4.2}
+network_exts <- tibble()
+network_exts$bbox_str <- ""
+network_exts$UNIT_CODE <- ""
+network_exts$UNIT_NAME <- ""
+network_exts$NetworkCode <- ""
+network_exts$NetworkName <- ""
+add_ext <- ext()
+
+IMD_parks_WSRs_networks_only <- IMD_parks_WSRs %>% 
+  filter(NetworkCode %in% list_of_networks)
+
+# determining the extent (bounding box) of each polygon in IMD_parks_WSRs, rearranging to be in correct format for WQP
+if (is.null(p4_buffer)){
+  for (x in 1:nrow(IMD_parks_WSRs_networks_only)){
+    UNIT_CODE <- IMD_parks_WSRs_networks_only$UNIT_CODE[x]
+    UNIT_NAME <- IMD_parks_WSRs_networks_only$UNIT_NAME[x]
+    NetworkCode <- IMD_parks_WSRs_networks_only$NetworkCode[x]
+    NetworkName <- IMD_parks_WSRs_networks_only$NetworkName[x]
+    print(paste0("Unit Code: ", UNIT_CODE, " ", x, "/", nrow(IMD_parks_WSRs_networks_only)))
+    row <- IMD_parks_WSRs_networks_only[x]
+    add_ext <- ext(row)
+    xmin <- add_ext$xmin %>% as.vector()
+    ymin <- add_ext$ymin %>% as.vector()
+    xmax <- add_ext$xmax %>% as.vector()
+    ymax <- add_ext$ymax %>% as.vector()
+    # xmin, ymin, xmax, ymax / west, south, east, north
+    bbox_str <- paste(xmin, ymin, xmax, ymax, sep = ",")
+    network_exts <- add_row(network_exts, UNIT_CODE, UNIT_NAME, NetworkCode, NetworkName, bbox_str) %>% 
+      distinct()
+  }
+} else{
+  IMD_parks_WSRs_networks_only_buffered <- vect()
+  crs(IMD_parks_WSRs_networks_only_buffered) <- target_epsg
+  for (y in 1:nrow(IMD_parks_WSRs_networks_only)){
+    UNIT_CODE <- IMD_parks_WSRs_networks_only$UNIT_CODE[y]
+    UNIT_NAME <- IMD_parks_WSRs_networks_only$UNIT_NAME[y]
+    NetworkCode <- IMD_parks_WSRs_networks_only$NetworkCode[y]
+    NetworkName <- IMD_parks_WSRs_networks_only$NetworkName[y]
+    print(paste0("Buffering Unit Code: ", UNIT_CODE, " ", y, "/", nrow(IMD_parks_WSRs_networks_only)))
+    IMD_boundary_add <- buffer(IMD_parks_WSRs_networks_only[y], p4_buffer)
+    add_ext <- ext(IMD_boundary_add)
+    xmin <- add_ext$xmin %>% as.vector()
+    ymin <- add_ext$ymin %>% as.vector()
+    xmax <- add_ext$xmax %>% as.vector()
+    ymax <- add_ext$ymax %>% as.vector()
+    # xmin, ymin, xmax, ymax / west, south, east, north
+    bbox_str <- paste(xmin, ymin, xmax, ymax, sep = ",")
+    network_exts <- add_row(network_exts, UNIT_CODE, UNIT_NAME, NetworkCode, NetworkName, bbox_str) %>% 
+      distinct()
+    IMD_parks_WSRs_networks_only_buffered <- rbind(IMD_parks_WSRs_networks_only_buffered, IMD_boundary_add)
+  }
+}
+```
+  
+```{r 4.3}  
+list_of_network_exts <- network_exts %>% 
+  filter(NetworkCode %in% list_of_networks)
+
+imd_sites_by_ext <- tibble(whatWQPsites(project = "TEST", convertType = FALSE, legacy = FALSE)) %>% 
+  slice(-1:-10000)
+
+imd_sites_by_ext$UNIT_CODE <- ""
+imd_sites_by_ext$UNIT_NAME <- ""
+imd_sites_by_ext$NetworkCode <- ""
+imd_sites_by_ext$NetworkName <- ""
+
+add_imd_sites_by_ext <- imd_sites_by_ext
+
+# bBox needs to be in xmin, ymin, xmax, ymax / west, south, east, north format
+# pulling WQP data based on bounding box
+for (row in 1:nrow(list_of_network_exts)){
+  UNIT_CODE <- list_of_network_exts$UNIT_CODE[row]
+  print(paste0("Unit Code: ", UNIT_CODE, " ", row, "/", nrow(list_of_network_exts)))
+  UNIT_NAME <- list_of_network_exts$UNIT_NAME[row]
+  NetworkCode <- list_of_network_exts$NetworkCode[row]
+  NetworkName <- list_of_network_exts$NetworkName[row]
+  
+  if (isFALSE(nps_only)){
+    add_imd_sites_by_ext <- whatWQPsites(bBox = list_of_network_exts$bbox_str[row],
+                                     #organization = "11NPSWRD_WQX",
+                                     convertType = FALSE,
+                                     legacy = FALSE) %>% 
+      distinct()
+  } else{
+    add_imd_sites_by_ext <- whatWQPsites(bBox = list_of_network_exts$bbox_str[row],
+                                     organization = "11NPSWRD_WQX",
+                                     convertType = FALSE,
+                                     legacy = FALSE) %>% 
+      distinct()
+  }
+  imd_sites_by_ext <- add_row(imd_sites_by_ext, UNIT_CODE, UNIT_NAME, NetworkCode, NetworkName, add_imd_sites_by_ext) %>% 
+    distinct()
+}
+
+imd_sites_by_ext <- parse_WQP(imd_sites_by_ext)
+
+imd_sites_by_ext <- imd_sites_by_ext %>% 
+  filter(!is.na(Location_Latitude) | !is.na(Location_Longitude))
+```
+
+```{r 4.4}
+# list of CRS' used in the data (all need to be consistent for mapping)
+crs_list <- imd_sites_by_ext$Location_HorzCoordReferenceSystemDatum %>% 
+  unique()
+crs_list
+
+# will have to use the best guess on these, but WGS84 seems to fit for the majority of these sites
+imd_sites_by_ext <- imd_sites_by_ext %>% 
+  tidyterra::mutate(Location_HorzCoordReferenceSystemDatum = ifelse(is.na(Location_HorzCoordReferenceSystemDatum) | Location_HorzCoordReferenceSystemDatum %in% c("UNKWN", "Unknown", "OTHER"), "WGS84", Location_HorzCoordReferenceSystemDatum))
+
+target_epsg <- crs_lookup %>% 
+  filter(crs_name == target_crs)
+
+target_epsg <- target_epsg$crs_epsg
+
+crs_list <- imd_sites_by_ext$Location_HorzCoordReferenceSystemDatum %>% 
+  unique()
+crs_list
+```
+
+```{r 4.5}
+# converting CRS' (this is the same code as part 5)
+imd_sites_by_ext_vect <- vect(imd_sites_by_ext, geom = c("Location_Longitude", "Location_Latitude"))
+fixed_imd_sites_by_ext_vect <- vect()
+
+for (crs in crs_list){
+  x <- imd_sites_by_ext_vect %>% 
+    filter(Location_HorzCoordReferenceSystemDatum == crs)
+  x_crs <- crs_lookup %>% 
+    filter(crs_name == crs)
+  x_crs <- x_crs$crs_epsg
+  crs(x) <- x_crs
+  x <- as_sf(x)
+  x <- st_transform(x, target_epsg)
+  x <- as_spatvector(x)
+  x <- x %>% 
+    mutate(Location_HorzCoordReferenceSystemDatum = ifelse(Location_HorzCoordReferenceSystemDatum == crs, target_crs, crs))
+  fixed_imd_sites_by_ext_vect <- rbind(fixed_imd_sites_by_ext_vect, x) %>% 
+    distinct() %>% 
+  terra::na.omit(geom = TRUE)
+}
+
+fixed_imd_sites_by_ext <- fixed_imd_sites_by_ext_vect %>% 
+  as_tibble(geom = "XY") %>% 
+  rename(Location_Longitude = x,
+         Location_Latitude = y) %>% 
+  filter(!is.na(Location_Latitude) | !is.na(Location_Longitude))
+
+network_park_list <- fixed_imd_sites_by_ext_vect$UNIT_CODE %>% 
+  unique()
+```
+
+```{r 4.6}
+# cropping sites to park boundary
+output_by_IMD_boundary <- tibble()
+
+sites_by_network_park <- fixed_imd_sites_by_ext_vect %>% 
+  select(-UNIT_CODE, -UNIT_NAME) %>% 
+  distinct()
+
+if (exists("IMD_parks_WSRs_networks_only_buffered")){
+  for (park in network_park_list){
+    network_sites_by_park_nps_boundary <- IMD_parks_WSRs_networks_only_buffered %>% 
+      filter(UNIT_CODE == park) %>% 
+      select(-UNIT_CODE, -UNIT_NAME)
+    only_network_sites_within <- IMD_parks_WSRs %>% 
+      filter(UNIT_CODE == park)
+    only_network_sites_within <- terra::intersect(sites_by_network_park, network_sites_by_park_nps_boundary) %>% 
+      select(Location_Identifier) %>%
+      as_tibble(.name_repair = "minimal") %>% 
+      distinct()
+    output_by_IMD_boundary <- rbind(output_by_IMD_boundary, only_network_sites_within) %>% 
+      distinct()
+  }
+} else{
+  for (park in network_park_list){
+    network_sites_by_park_nps_boundary <- IMD_parks_WSRs_networks_only %>% 
+      filter(UNIT_CODE == park) %>% 
+      select(-UNIT_CODE, -UNIT_NAME)
+    only_network_sites_within <- IMD_parks_WSRs %>% 
+      filter(UNIT_CODE == park)
+    only_network_sites_within <- terra::intersect(sites_by_network_park, network_sites_by_park_nps_boundary) %>% 
+      select(Location_Identifier) %>%
+      as_tibble(.name_repair = "minimal") %>% 
+      distinct()
+    output_by_IMD_boundary <- rbind(output_by_IMD_boundary, only_network_sites_within) %>% 
+      distinct()
+  }
+}
+
+output_within_IMD_boundary <- fixed_imd_sites_by_ext %>% 
+  filter(Location_Identifier %in% output_by_IMD_boundary$Location_Identifier) %>% 
+  select(where(~!all(is.na(.x)))) %>% 
+  distinct()
+
+if (length(list_of_network_exts$NetworkCode %>% 
+           unique()) > 1){
+  output_within_IMD_boundary %>% 
+    group_by(NetworkCode, NetworkName, UNIT_CODE, UNIT_NAME) %>% 
+    count()
+} else {
+  output_within_IMD_boundary %>% 
+    group_by(UNIT_CODE, UNIT_NAME) %>% 
+    count()
+}
+```
+
+```{r 4.7}
+# datetime for saving files
+current_datetime <- format(Sys.time(), "%d-%b-%Y-%H%M%S")
+
+# p4 save format
+p4_filename <- paste0("data_output/P4-output_within_IMD_boundary-", current_datetime, ".csv")
+p4_filename_vect <- paste0("data_output/P4-output_within_IMD_boundary-shp/P4-output_within_IMD_boundary-", current_datetime, ".shp")
+
+if (isFALSE(p4_save)){
+} else {
+  write.csv(output_within_IMD_boundary, p4_filename)
+  dir.create("data_output/P4-output_within_IMD_boundary-shp", showWarnings = FALSE)
+  output_within_IMD_boundary %>%
+    vect(crs = target_epsg, geom = c("Location_Longitude", "Location_Latitude")) %>%
+    writeVector(filename = p4_filename_vect)
+}
+```
+
+```{r 4.8, message=FALSE, warning=FALSE, include=FALSE}
+stop("Part 4 complete")
+```
+
+
+
+# Part 5: Updating coordinates to a single CRS (necessary if using data for mapping AND/OR if doing part 6 below for determining parks/networks)
+
+# Note 1: Unknown CRS' are set to use WGS84 by default; if using data for something that requires precision, consider filtering these values out instead since it's not necessarily super accurate.
+
+# Note 2: Part 5 is now required if running part 6, but you can stop at part 5 if you don't want/need park/network codes appended to the data.
+
+```{r 5.1}
+# enter df with Location_Identifiers, coords, and Location_HorzCoordReferenceSystemDatum, OR if carrying on from part 2, monitoringlocoid_data_output
+
+unprojected_output <- monitoringlocoid_data_output %>%
+distinct()
+# unprojected_output <- read_csv("data_output/P2-monitoringlocoid_data_output-17-Jul-2025-142243.csv", show_col_types = FALSE) %>%
+#   select(-1) %>% 
+#   distinct()
+
+# change this to TRUE or FALSE if you do/do not want to save the output from Part 5
+p5_save_csv <- FALSE
+p5_save_shp <- FALSE
+
+# insert CRS you want to convert all the data to (default is WGS84; see crs_lookup table for other options, or you can append whatever you want to that file)
+target_crs <- "WGS84"
+
+# create list of Location_HorzCoordReferenceSystemDatum - check column formatting, it changes in WQX3/ water quality portal beta
+wqx3_check <- "Location_HorzCoordReferenceSystemDatum" %in% names(unprojected_output)
+
+if (isTRUE(wqx3_check)){
+  if (length(unprojected_output$Location_HorzCoordReferenceSystemDatum %>% 
+             unique()) == 1 && unprojected_output$Location_HorzCoordReferenceSystemDatum %>% 
+           unique() == target_crs){
+    p5_skip <- TRUE
+  } else{
+    p5_skip <- FALSE
+  }
+} else{
+if (length(unprojected_output$HorizontalCoordinateReferenceSystemDatumName %>% 
+             unique()) == 1 && unprojected_output$HorizontalCoordinateReferenceSystemDatumName %>% 
+           unique() == target_crs){
+    p5_skip <- TRUE
+  } else{
+    p5_skip <- FALSE
+  }
+}
+
+```
+
+```{r 5.2}
+# UNKNOWN; OTHER CRS'
+  # will have to use the best guess on these, but WGS84 seems to fit for the majority of these sites
+if (isFALSE(p5_skip)){
+  if (isTRUE(wqx3_check)){
+    unprojected_output <- unprojected_output %>% 
+      tidyterra::mutate(Location_HorzCoordReferenceSystemDatum = ifelse(is.na(Location_HorzCoordReferenceSystemDatum) | Location_HorzCoordReferenceSystemDatum %in% c("UNKWN", "Unknown", "OTHER"), "WGS84", Location_HorzCoordReferenceSystemDatum))
+    if (length(unprojected_output$Location_HorzCoordReferenceSystemDatum %>% 
+               unique()) == 1 && unprojected_output$Location_HorzCoordReferenceSystemDatum %>% 
+        unique() == target_crs){
+      p5_skip <- TRUE 
+      } else{
+        p5_skip <- FALSE
+        }
+    } else{
+      unprojected_output <- unprojected_output %>% 
+        tidyterra::mutate(HorizontalCoordinateReferenceSystemDatumName = ifelse(is.na(HorizontalCoordinateReferenceSystemDatumName) | HorizontalCoordinateReferenceSystemDatumName %in% c("UNKWN", "Unknown", "OTHER"), "WGS84", HorizontalCoordinateReferenceSystemDatumName))
+      
+      if (length(unprojected_output$HorizontalCoordinateReferenceSystemDatumName %>% 
+                 unique()) == 1 && unprojected_output$HorizontalCoordinateReferenceSystemDatumName %>% 
+          unique() == target_crs){
+        p5_skip <- TRUE 
+        } else{
+          p5_skip <- FALSE
+        }
+      }
+} else{
+  }          
+```
+
+```{r 5.3}
+if (isFALSE(p5_skip)){
+  target_epsg <- crs_lookup %>% 
+    filter(crs_name == target_crs)
+  target_epsg <- target_epsg$crs_epsg
+  
+  if (isTRUE(wqx3_check)){
+    crs_list <- unprojected_output$Location_HorzCoordReferenceSystemDatum %>% 
+      unique()
+    
+    unprojected_output_vect <- vect(unprojected_output, geom = c("Location_Longitude", "Location_Latitude")) %>% 
+      na.omit(geom = TRUE)
+  
+    projected_output_vect <- vect()
+  
+    for (crs in crs_list){
+      current_crs_group <- unprojected_output_vect %>% 
+        filter(Location_HorzCoordReferenceSystemDatum == crs) %>% 
+        na.omit(geom = TRUE)
+      current_crs_group_crs <- crs_lookup %>% 
+        filter(crs_name == crs)
+      current_crs_group_crs <- current_crs_group_crs$crs_epsg
+      crs(current_crs_group) <- current_crs_group_crs
+      current_crs_group <- as_sf(current_crs_group)
+      current_crs_group <- st_transform(current_crs_group, target_epsg)
+      current_crs_group <- as_spatvector(current_crs_group)
+      current_crs_group <- current_crs_group %>% 
+        mutate(Location_HorzCoordReferenceSystemDatum = ifelse(Location_HorzCoordReferenceSystemDatum == crs, target_crs, crs))
+      projected_output_vect <- rbind(projected_output_vect, current_crs_group) %>% 
+        na.omit(geom = TRUE)
+      }
+    } else{
+        crs_list <- unprojected_output$HorizontalCoordinateReferenceSystemDatumName %>% 
+          unique()
+        
+        unprojected_output_vect <- vect(unprojected_output, geom = c("LongitudeMeasure", "LatitudeMeasure")) %>%
+          na.omit(geom = TRUE)
+        
+        projected_output_vect <- vect()
+        
+        for (crs in crs_list){
+          current_crs_group <- unprojected_output_vect %>% 
+            filter(HorizontalCoordinateReferenceSystemDatumName == crs) %>% 
+            na.omit(geom = TRUE)
+          current_crs_group_crs <- crs_lookup %>% 
+            filter(crs_name == crs)
+          current_crs_group_crs <- current_crs_group_crs$crs_epsg
+          crs(current_crs_group) <- current_crs_group_crs
+          current_crs_group <- as_sf(current_crs_group)
+          current_crs_group <- st_transform(current_crs_group, target_epsg)
+          current_crs_group <- as_spatvector(current_crs_group)
+          current_crs_group <- current_crs_group %>% 
+            mutate(HorizontalCoordinateReferenceSystemDatumName = ifelse(HorizontalCoordinateReferenceSystemDatumName == crs, target_crs, crs)) %>% 
+            rename(Location_HorzCoordReferenceSystemDatum = HorizontalCoordinateReferenceSystemDatumName,
+                   Location_Identifier = MonitoringLocationIdentifier,
+                   Project_Identifier = ProjectIdentifier)
+          projected_output_vect <- rbind(projected_output_vect, current_crs_group) %>% 
+            na.omit(geom = TRUE)
+        }
+        }
+  projected_output <- as_tibble(projected_output_vect,
+                                geom = "XY") %>% 
+    rename(Location_Latitude = y,
+           Location_Longitude = x) %>% 
+    distinct() %>% 
+    select(where(~!all(is.na(.x))))
+  } else{
+    projected_output <- unprojected_output %>% 
+      select(where(~!all(is.na(.x))))
+    }
+```
+
+```{r 5.4}
+# datetime for saving files
+current_datetime <- format(Sys.time(), "%d-%b-%Y-%H%M%S")
+
+# p5 save format
+p5_filename <- paste0("data_output/P5-projected_output-", current_datetime, ".csv")
+p5_filename_vect <- paste0("data_output/P5-projected_output-shp/P5-output_within_IMD_boundary-", current_datetime, ".shp")
+
+if (isFALSE(p5_save_csv)){
+} else {
+  write.csv(projected_output, p5_filename)
+}
+
+if (isFALSE(p5_save_shp)){
+} else {
+  dir.create("data_output/P5-projected_output-shp", showWarnings = FALSE)
+  projected_output_vect %>%
+    writeVector(p5_filename_vect)
+}
+```
+
+```{r 5.5, message=FALSE, warning=FALSE, include=FALSE}
+stop("Part 5 complete")
+```
+
+
+# Part 6: Adding Park and Network info (if applicable) for Location_Identifiers 
+
+# Note 1: This part now requires you to run part 5 on your data, even if it is already a standarized CRS (it will just skip over those parts, but is required to get the column naming correct).
+
+# Note 2: If unit code not determined by Location_Identifier, it will perform a spatial join. For units found within other units/ units with borders that slightly overlap, only one of the unit codes will be picked. A common example of an area where this occurs is between PORE and GOGA since SFAN does not always include UNIT_CODE within their Location_Identifiers.
+
+# WARNING: If the code can't find the unit code from Location_Identifier or from spatial join, it will attempt to match sites to the closest polygon, regardless of distance. This can have unintended consequences if the site has wildly incorrect coordinate points or if site is near multiple UNIT_CODEs. 
+
+## It is highly recommended (but not required) to view these points in ArcGIS Pro before matching based on closest polygon. By default, a .shp called "missing_park_code-[datetime].shp" is generated to easily pull these points in ArcGIS Pro. If the site-UNIT_CODE match seems correct, you can continue without changing anything. Otherwise, manual editing is necessary to fix these points.
+
+```{r 6.1}
+# continue from part 5
+projected_input_nps_codes <- projected_output %>% 
+  distinct()
+
+# change this to TRUE or FALSE if you do/do not want to save the final output from Part 6
+p6_save_csv <- FALSE
+p6_save_shp <- FALSE
+
+# change this to TRUE or FALSE if you do/do not want to save the shp containing sites that do not include unit codes in the Location_Identifier (highly recommended to check these locations manually in ArcGIS Pro)
+missing_codes <- FALSE
+
+# insert CRS that the data is already in (if not standardized, do part 5)
+target_crs <- "WGS84"
+
+target_epsg <- crs_lookup %>% 
+  filter(crs_name == target_crs)
+
+target_epsg <- target_epsg$crs_epsg
+```
+
+```{r 6.2}
+# majority of the monitoring sites have the same naming scheme that includes park code, so first this is used to try to assign parks/networks (this is only for NPS org sites)
+projected_input_nps_codes$UNIT_CODE <- projected_input_nps_codes$Location_Identifier
+
+projected_input_nps_codes <- projected_input_nps_codes %>% 
+  mutate(UNIT_CODE = str_remove(UNIT_CODE, pattern = "11NPSWRD_WQX-"),
+         UNIT_CODE = gsub(UNIT_CODE, pattern = "\\_..*", replacement = ""),
+         UNIT_CODE = ifelse(UNIT_CODE == "NACE", "NACA", UNIT_CODE),
+         UNIT_CODE = ifelse(UNIT_CODE == "NACC", "NACA", UNIT_CODE),
+         UNIT_CODE = ifelse(UNIT_CODE == "PRSF", "GOGA", UNIT_CODE),
+         UNIT_CODE = ifelse(UNIT_CODE == "LOSA", "SACN", UNIT_CODE),
+         UNIT_CODE = ifelse(UNIT_CODE == "CRMP", "CRMO", UNIT_CODE),
+         UNIT_CODE = ifelse(UNIT_CODE == "VALR", "PERL", UNIT_CODE),
+         UNIT_CODE = ifelse(UNIT_CODE == "EIGT", "WSEIGH", UNIT_CODE))
+
+if (nrow(projected_input_nps_codes %>% 
+         filter(!UNIT_CODE %in% park_codes)) != 0){
+  p6_skip <- FALSE
+  
+  projected_input_nps_codes_append <- projected_input_nps_codes %>% 
+    filter(!UNIT_CODE %in% park_codes)
+  
+  projected_output_nps_codes <- projected_input_nps_codes %>% 
+    filter(UNIT_CODE %in% park_codes)
+  
+  projected_input_nps_codes_append$UNIT_CODE <- projected_input_nps_codes_append$Location_Identifier
+} else{
+  p6_skip = TRUE
+}
+```
+
+```{r 6.3}
+if (isFALSE(p6_skip)){
+  projected_input_nps_codes_append <- projected_input_nps_codes_append %>% 
+    mutate(UNIT_CODE = str_remove(UNIT_CODE, pattern = "11NPSWRD_WQX-.{5}"),
+           UNIT_CODE = gsub(UNIT_CODE, pattern = "\\_..*", replacement = ""),
+           UNIT_CODE = ifelse(UNIT_CODE == "NACE", "NACA", UNIT_CODE),
+           UNIT_CODE = ifelse(UNIT_CODE == "NACC", "NACA", UNIT_CODE),
+           UNIT_CODE = ifelse(UNIT_CODE == "PRSF", "GOGA", UNIT_CODE),
+           UNIT_CODE = ifelse(UNIT_CODE == "LOSA", "SACN", UNIT_CODE),
+           UNIT_CODE = ifelse(UNIT_CODE == "CRMP", "CRMO", UNIT_CODE),
+           UNIT_CODE = ifelse(UNIT_CODE == "VALR", "PERL", UNIT_CODE),
+           UNIT_CODE = ifelse(UNIT_CODE == "EIGT", "WSEIGH", UNIT_CODE))
+} else{
+}
+
+if (nrow(projected_input_nps_codes_append %>% 
+         filter(!UNIT_CODE %in% park_codes)) != 0){
+   projected_output_nps_codes <- projected_input_nps_codes_append %>% 
+     filter(UNIT_CODE %in% park_codes) %>%
+     full_join(projected_output_nps_codes) %>% 
+     distinct()
+  
+  projected_input_nps_codes_append <- projected_input_nps_codes_append %>% 
+    filter(!UNIT_CODE %in% park_codes) %>% 
+    select(-UNIT_CODE)
+
+} else{
+  projected_output_nps_codes <- projected_input_nps_codes_append %>% 
+    filter(UNIT_CODE %in% park_codes) %>% 
+    full_join(projected_output_nps_codes) %>% 
+    distinct()
+  
+  p6_skip = TRUE
+}
+
+projected_input_nps_codes_append %>% 
+  arrange(Location_Identifier)
+
+projected_output_nps_codes %>% 
+  select(UNIT_CODE) %>% 
+  distinct()
+```
+
+```{r 6.4}
+# unfortunately some will not follow this pattern and will need to use spatial data to determine which park/network they belong to 
+  # this method can also be used to find the network and park of non-11NPSWRD_WQX sites (but use with caution, especially for parks outside of NPS boundaries)
+
+# ones that are still missing
+if (isFALSE(p6_skip)){
+  missing_park_code <- projected_input_nps_codes_append %>% 
+    select(Location_Identifier, Location_Latitude, Location_Longitude, Location_HorzCoordReferenceSystemDatum) %>% 
+    distinct()
+
+  missing_park_code_vect <- vect(missing_park_code, geom = c("Location_Longitude", "Location_Latitude"))
+
+  crs(missing_park_code_vect) <- target_epsg
+  
+  missing_park_code
+} else{
+}
+
+```
+
+```{r 6.5}
+# spatially finds the UNIT_CODE of the park unit the point is located in
+if (isFALSE(p6_skip)){
+  missing_park_code_in_park_vect <- intersect(missing_park_code_vect, nps_boundary_WSRs)
+
+  missing_park_code_in_park <- missing_park_code_in_park_vect %>% 
+    as_tibble(geom = "XY") %>% 
+    rename(Location_Latitude = y,
+           Location_Longitude = x) %>% 
+    select(Location_Identifier, UNIT_CODE)
+
+  # if this returns 0, you're good. or else there's a site within the boundaries of two parks which will create duplicates. best to pick one site or the other (this is done automatically below; only change if you want to manually override this pick)
+  missing_park_code_in_park %>% 
+    group_by(Location_Identifier) %>% 
+    count() %>% 
+    arrange(desc(n)) %>% 
+    filter(n > 1)
+
+  # if site is in multiple parks, picks the first one
+  missing_park_code_in_park <- missing_park_code_in_park %>% 
+    group_by(Location_Identifier) %>% 
+    slice(1) %>% 
+    ungroup()
+
+  missing_park_code_in_park <- projected_input_nps_codes_append %>% 
+    filter(Location_Identifier %in% missing_park_code_in_park$Location_Identifier) %>% 
+      left_join(missing_park_code_in_park, join_by(Location_Identifier))
+  
+  # these ones now have unit codes; updating list
+  projected_output_nps_codes <- full_join(projected_output_nps_codes, missing_park_code_in_park) %>%
+    distinct()
+} else{
+}
+
+missing_park_code_in_park %>% 
+  select(UNIT_CODE) %>% 
+  distinct()
+```
+
+```{r 6.6}
+if (isTRUE(p6_skip) || nrow(missing_park_code_vect %>% 
+    filter(Location_Identifier %in% projected_output_nps_codes$Location_Identifier)) == 0){
+  p6_skip <- TRUE
+} else{
+  missing_park_code_vect_outside_park <- missing_park_code_vect %>% 
+    filter(!Location_Identifier %in% projected_output_nps_codes$Location_Identifier)
+  
+  missing_park_code <- missing_park_code %>% 
+    filter(!Location_Identifier %in% projected_output_nps_codes$Location_Identifier)
+  
+  projected_input_nps_codes_append <- projected_input_nps_codes_append %>% 
+    filter(!Location_Identifier %in% projected_output_nps_codes$Location_Identifier)
+}
+```
+
+```{r 6.7}
+# remaining points that fall outside of a park boundary
+# HIGHLY recommended that you save this shp and open it in ArcGIS Pro to check where these remaining points are located. If they seem in an accurate place (such as right outside a park boundary), the rest of this code will match it with the closest park unit. If it seems incorrect (e.g., points showing up at 0,0), the below code will still match it to the closest park unit, regardless of distance (this is a limitation of Terra's nearby function). 
+
+if (exists("missing_park_code_vect_outside_park")){
+  nearby_match <- TRUE
+} else {
+  nearby_match <- FALSE
+}
+
+if (isTRUE(nearby_match) & isTRUE(missing_codes)){
+  current_datetime <- format(Sys.time(), "%d-%b-%Y-%H%M%S")
+  p6_missing_codes_filename <- paste0("data_output/P6_missing_park_code-shp/P6-missing_park_code-", current_datetime, ".shp")
+  dir.create("data_output/P6_missing_park_code-shp", showWarnings = FALSE)
+  missing_park_code_vect_outside_park %>%
+    writeVector(p6_missing_codes_filename)
+} else{
+}
+```
+
+```{r 6.8}
+missing_park_code_outside_park <- vect()
+crs(missing_park_code_outside_park) <- target_epsg
+
+# for the remaining points that fall outside of a park boundary, the closest one is used (use with caution)
+if (isTRUE(nearby_match)){
+# determining nearest unit code
+  for (rowidk in 1:nrow(missing_park_code_vect_outside_park)){
+    print(paste0(missing_park_code_vect_outside_park$Location_Identifier[rowidk], ", ", rowidk))
+    rowfind <- missing_park_code_vect_outside_park[rowidk]
+    nearrow <- nearby(missing_park_code_vect_outside_park[rowidk], nps_boundary_WSRs, k = 1, centroids = FALSE, method = "geo") %>%
+      as_tibble()
+    rowfind$k1 <- nearrow$k1
+    missing_park_code_outside_park <- rbind(missing_park_code_outside_park, rowfind)
+    }
+  
+  missing_park_code_outside_park <- missing_park_code_outside_park %>% 
+    as_tibble(geom = "XY") %>%
+    rename("Location_Longitude" = x, 
+           "Location_Latitude" = y)
+
+  missing_park_code_outside_park <- inner_join((nps_boundary_WSRs %>% 
+                                                 as_tibble() %>% 
+                                                  select(OBJECTID, UNIT_CODE, UNIT_NAME)), 
+                                               missing_park_code_outside_park, join_by(OBJECTID == k1)) %>% 
+    select(-OBJECTID) %>% 
+    select(UNIT_CODE, Location_Identifier)
+  
+  projected_input_nps_codes_append <- projected_input_nps_codes_append %>% 
+    filter(Location_Identifier %in% missing_park_code_outside_park$Location_Identifier) %>% full_join(missing_park_code_outside_park)
+  
+  projected_output_nps_codes <- full_join(projected_output_nps_codes, projected_input_nps_codes_append) %>%
+    distinct()
+  
+  projected_output_nps_codes <- left_join(projected_output_nps_codes, (nps_boundary_WSRs %>% 
+                                                                         as_tibble() %>% 
+                                                                         select(UNIT_CODE, UNIT_NAME, NetworkCode, NetworkName)),
+                                          join_by(UNIT_CODE)) 
+  # %>% 
+  # select(where(~!all(is.na(.x))))
+} else {
+  projected_output_nps_codes <- left_join(projected_output_nps_codes, (nps_boundary_WSRs %>% 
+                                                                         as_tibble() %>% 
+                                                                         select(UNIT_CODE, UNIT_NAME, NetworkCode, NetworkName)),
+                                          join_by(UNIT_CODE)) 
+}
+
+projected_input_nps_codes %>% 
+  filter(!Location_Identifier %in% projected_output_nps_codes$Location_Identifier)
+
+projected_output_nps_codes <- projected_output_nps_codes %>% 
+  select(where(~!all(is.na(.x))))
+
+projected_output_nps_codes <- projected_output_nps_codes %>% 
+  distinct()
+```
+
+```{r 6.9}
+if (length(projected_output_nps_codes$NetworkCode %>% 
+    unique()) > 1){
+  projected_output_nps_codes %>% 
+    group_by(UNIT_CODE, UNIT_NAME, NetworkCode, NetworkName) %>% 
+    count()
+} else{
+  projected_output_nps_codes %>% 
+    select(UNIT_CODE, UNIT_NAME, everything()) %>% 
+    group_by(NetworkCode, NetworkName, UNIT_CODE, UNIT_NAME) %>% 
+    count()
+}
+
+projected_output_nps_codes %>% 
+  group_by(Location_Identifier) %>% 
+  count() %>% 
+  arrange(desc(n))
+```
+
+```{r 6.10}
+# datetime for saving files
+current_datetime <- format(Sys.time(), "%d-%b-%Y-%H%M%S")
+
+# p6 save format
+p6_filename <- paste0("data_output/P6-projected_output_nps_codes-", current_datetime, ".csv")
+p6_filename_vect <- paste0("data_output/P6-projected_output_nps_codes-shp/P6-projected_output_nps_codes-", current_datetime, ".shp")
+
+if (isFALSE(p6_save_csv)){
+} else {
+  write.csv(projected_output_nps_codes, p6_filename)
+}
+
+if (isFALSE(p6_save_shp)){
+} else {
+  dir.create("data_output/P6-projected_output_nps_codes-shp", showWarnings = FALSE)
+  projected_output_nps_codes_vect <- projected_output_nps_codes %>%
+    vect(geom = c("Location_Longitude", "Location_Latitude"))
+  crs(projected_output_nps_codes_vect) <- target_epsg$crs_epsg
+  projected_output_nps_codes_vect %>% 
+    writeVector(filename = p6_filename_vect)
+}
+```
+
+```{r 6.11, message=FALSE, warning=FALSE, include=FALSE}
+stop("Part 6 complete")
+```
+
+
+```{r eval=FALSE, include=FALSE}
+# wqp_check <- read_csv("data_output/P6-projected_output_nps_codes-13-Jun-2025-093313.csv") %>% 
+#   select(-1, -2)
+# 
+# wqp_check
+```
+
+
+# Part 7: Start here if you only have a list of OrganizationIDs and need to get Location_Identifiers from it
+```{r 7.1}
+# import data with OrganizationIDs here
+# projects_data_input <- read_csv("", show_col_types = FALSE, col_select = -1)
+
+# create list of OrganizationIDs
+list_of_org_ids <- organizations$ID %>% 
+  distinct()
+
+# change this to TRUE or FALSE if you do/do not want to save the output from Part 1
+p7_save <- TRUE
+```
+
+```{r 7.2}
+# pulls TEST org and then removes data as an easy way of copying the blank dataframe with all the necessary columns
+initial_add <- tibble(whatWQPsites(organization = "939785", convertType = FALSE, legacy = FALSE)) %>% 
+  slice(-1)
+
+group_size_orgids <- 100
+group_of_orgids <- split(list_of_org_ids, ceiling(seq_along(list_of_org_ids) / group_size_orgids))
+
+# counter to see what org you're on
+total_org_num = 1
+org_group_num = 1
+org_group_place_num = 1
+
+for (org_group in group_of_orgids[1:length(group_of_orgids)]){
+  output_add <- initial_add
+  for (org in org_group){
+    print(paste0("Total org number: ", total_org_num, "/", length(list_of_org_ids),
+                 "; Org group: ", org_group_num, "/", length(group_of_orgids),
+                 "; Within org group number: ", org_group_place_num, "/", length(org_group),
+                 "; OrganizationID: ", org))
+    add_site <- whatWQPsites(organization = org, convertType = FALSE, legacy = FALSE) %>% 
+      distinct()
+    output_add <- plyr::rbind.fill(output_add, add_site) %>% 
+      distinct()
+    total_org_num = total_org_num+1
+    org_group_place_num = org_group_place_num+1
+  }
+  df_name <- paste0("output_site_group_", org_group_num)
+  assign(df_name, output_add, envir = .GlobalEnv)
+  org_group_num = org_group_num+1
+  org_group_place_num = 1
+}
+
+# rebinding the groups together; removing duplicates
+output_add_list <- list()
+total_org_groups <- org_group_num - 1 
+
+for (i in 1:total_org_groups) {
+  df_name <- paste0("output_site_group_", i)
+  output_add_list[[i]] <- get(df_name)
+}
+
+org_data_output <- bind_rows(output_add_list) %>% 
+  distinct()
+  
+org_data_output <- parse_WQP(org_data_output)
+```
+
+```{r 7.3}
+# datetime for saving files
+current_datetime <- format(Sys.time(), "%d-%b-%Y-%H%M%S")
+
+# p7 save format
+p7_filename <- paste0("data_output/P7-org_data_output-", current_datetime, ".csv")
+
+if (isFALSE(p7_save)){
+} else {
+  write.csv(org_data_output, p1_filename)
+}
+```
+
+```{r 7.4, message=FALSE, warning=FALSE, include=FALSE}
+stop("Part 7 complete")
+```
+
+
+# Part 8: Experimental, might not be necessary with post-3.0 WQP/NWIS - what WQP site info from monitoringlocoids
+```{r 8.1}
+# import data with OrganizationIDs here
+projects_data_input <- read_csv("data_output/P6-projected_output_nps_codes-13-Jun-2025-093313.csv")
+
+# create list of OrganizationIDs
+list_of_monolocoids <- projects_data_input$Location_Identifier %>%
+  unique()
+
+# change this to TRUE or FALSE if you do/do not want to save the output from Part 1
+p8_save <- TRUE
+```
+
+```{r 8.2}
+# pulls TEST org and then removes data as an easy way of copying the blank dataframe with all the necessary columns
+initial_add <- tibble(whatWQPsites(siteid = "TEST", convertType = FALSE, legacy = FALSE)) %>% 
+  slice(-1)
+
+group_size_monolocoids <- 500
+group_of_monolocoids <- split(list_of_monolocoids, ceiling(seq_along(list_of_monolocoids) / group_size_monolocoids))
+
+# counter to see what org you're on
+total_monolocoid_num = 1
+monolocoid_group_num = 1
+monolocoid_group_place_num = 1
+
+for (monolocoid_group in group_of_monolocoids[1:length(group_of_monolocoids)]){
+  output_add <- initial_add
+  for (monolocoid in monolocoid_group){
+    print(paste0("Total monolocoid number: ", total_monolocoid_num, "/", length(list_of_monolocoids),
+                 "; Monolocoid group: ", monolocoid_group_num, "/", length(group_of_monolocoids),
+                 "; Within monolocoid group number: ", monolocoid_group_place_num, "/", length(monolocoid_group),
+                 "; Monolocoid: ", monolocoid))
+    add_site <- whatWQPsites(siteid = monolocoid, convertType = FALSE, legacy = FALSE) %>% 
+      distinct()
+    output_add <- plyr::rbind.fill(output_add, add_site) %>% 
+      distinct()
+    total_monolocoid_num = total_monolocoid_num+1
+    monolocoid_group_place_num = monolocoid_group_place_num+1
+  }
+  df_name <- paste0("output_site_group_", monolocoid_group_num)
+  assign(df_name, output_add, envir = .GlobalEnv)
+  monolocoid_group_num = monolocoid_group_num+1
+  monolocoid_group_place_num = 1
+}
+```
+
+```{r 8.3}
+# rebinding the groups together; removing duplicates
+output_add_list <- list()
+total_monolocoid_groups <- monolocoid_group_num - 1 
+
+for (i in 1:total_monolocoid_groups) {
+  df_name <- paste0("output_site_group_", i)
+  output_add_list[[i]] <- get(df_name)
+}
+
+monolocoid_data_output <- bind_rows(output_add_list) %>% 
+  distinct()
+  
+monolocoid_data_output <- parse_WQP(monolocoid_data_output)
+
+projects_data_output <- projects_data_input %>%
+  select(-1, -2) %>% 
+  select(-OrganizationIdentifier, -OrganizationFormalName, -Location_Latitude, -Location_Longitude, -Location_HorzCoordReferenceSystemDatum, -ProviderName) %>% 
+  full_join(monolocoid_data_output) %>% 
+  distinct()
+```
+
+```{r 8.4}
+# datetime for saving files
+current_datetime <- format(Sys.time(), "%d-%b-%Y-%H%M%S")
+
+# p8 save format
+p8_filename <- paste0("data_output/P8-projects_data_output-", current_datetime, ".csv")
+
+if (isFALSE(p8_save)){
+} else {
+  write.csv(projects_data_output, p8_filename)
+}
+```
+
+```{r 8.5, message=FALSE, warning=FALSE, include=FALSE}
+stop("Part 8 complete")
+```
+

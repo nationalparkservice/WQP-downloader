@@ -1,0 +1,9 @@
+Network,NetworkCode,ProjectID,ProjectName
+San Francisco Bay Area Network,SFAN,SFAN_I&M,SFAN Long-Term Water Quality Monitoring Program
+San Francisco Bay Area Network,SFAN,SFAN_I&M_EXTRA,"SFAN Long-Term Water Quality Monitoring Program, Extra Sampling"
+San Francisco Bay Area Network,SFAN,SFAN_WQ,SFAN Pilot Monitoring for Freshwater Quality Protocol
+Cumberland Piedmont Network,CUPN,ABLI_WQ,"CUPN WQ Monitoring, ABLI"
+Cumberland Piedmont Network,CUPN,CARL_WQ,"CUPN WQ Monitoring, CARL"
+Cumberland Piedmont Network,CUPN,CHCH_WQ,"CUPN WQ Monitoring, CHCH"
+Cumberland Piedmont Network,CUPN,COWP_WQ,"CUPN WQ Monitoring, COWP"
+San Francisco Bay Area Network,SFAN,PRSF_WQ,Presidio Trust Water Quality Monitoring

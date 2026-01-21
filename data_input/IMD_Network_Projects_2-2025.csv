@@ -1,0 +1,81 @@
+Network,NetworkCode,ProjectID,ProjectName
+Appalachian Highlands Network,APHN,APHN_WQ,Appalachian Highlands Network Long Term Water Resource Monitoring
+Cumberland Piedmont Network,CUPN,ABLI_WQ,"CUPN WQ Monitoring, ABLI"
+Cumberland Piedmont Network,CUPN,CARL_WQ,"CUPN WQ Monitoring, CARL"
+Cumberland Piedmont Network,CUPN,CHCH_WQ,"CUPN WQ Monitoring, CHCH"
+Cumberland Piedmont Network,CUPN,COWP_WQ,"CUPN WQ Monitoring, COWP"
+Cumberland Piedmont Network,CUPN,CUGA_WQ,"CUPN WQ Monitoring, CUGA"
+Cumberland Piedmont Network,CUPN,FODO_WQ,"CUPN WQ Monitoring, FODO"
+Cumberland Piedmont Network,CUPN,GUCO_WQ,"CUPN WQ Monitoring, GUCO"
+Cumberland Piedmont Network,CUPN,KIMO_WQ,"CUPN WQ Monitoring, KIMO"
+Cumberland Piedmont Network,CUPN,LIRI_WQ,"CUPN WQ Monitoring, LIRI"
+Cumberland Piedmont Network,CUPN,MACA_WQ,"CUPN WQ Monitoring, MACA"
+Cumberland Piedmont Network,CUPN,NISI_WQ,"CUPN WQ Monitoring, NISI"
+Cumberland Piedmont Network,CUPN,RUCA_WQ,"CUPN WQ Monitoring, RUCA"
+Cumberland Piedmont Network,CUPN,SHIL_WQ,"CUPN WQ Monitoring, SHIL"
+Cumberland Piedmont Network,CUPN,STRI_WQ,"CUPN WQ Monitoring, STRI"
+Eastern Rivers and Mountains Network,ERMN,ERMN_BMI,Eastern Rivers and Mountains Network Benthic Macroinvertebrate Monitoring
+Eastern Rivers and Mountains Network,ERMN,ERMN_PWSM,Eastern Rivers and Mountains Network Pilot Wadeable Stream Monitoring
+Great Lakes Network,GLKN,GLKNBACC_UWLAX_DF,Great Lakes Network Bioaccumulative Contaminant Monitoring - UW LaCrosse Dragonflies
+Great Lakes Network,GLKN,GLKNBACC_UWLAX_FISH,Great Lakes Network Bioaccumulative Contaminant Monitoring - UW LaCrosse Fish
+Great Lakes Network,GLKN,GLKNLKWQ,Great Lakes Network Inland Lakes Water Quality Monitoring
+Great Lakes Network,GLKN,GLKNRVWQ,Great Lakes Network Large Rivers Water Quality Monitoring
+Greater Yellowstone Network,GRYN,BICAWQ01,Bighorn Canyon NRA - GRYN Water Quality Monitoring
+Greater Yellowstone Network,GRYN,GRTEWQ01,Grand Teton National Park - GRYN Water Quality Monitoring
+Greater Yellowstone Network,GRYN,YELL_SBC_STUDY,Soda Butte Creek Water Quality Study after McLaren Tailings Restoration
+Greater Yellowstone Network,GRYN,YELLWQ01,Yellowstone National Park - GRYN Water Quality Monitoring
+Gulf Coast Network,GULN,BITH_HAR,Harrel's WQ Monitoring in Big Thicket National Preserve
+Gulf Coast Network,GULN,BITH_WQ,GULN WQ Monitoring at Big Thicket National Preserve
+Gulf Coast Network,GULN,GUIS_WQ,GULN WQ Monitoring at Gulf Islands National Seashore
+Gulf Coast Network,GULN,JELA_WQ,GULN WQ Monitoring at Jean Lafitte N.H.P. and Preserve
+Gulf Coast Network,GULN,NATR_L1,Natchez Trace Parkway Level I Water Quality Inventory
+Gulf Coast Network,GULN,NATR_WQ,GULN WQ Monitoring at Natchez Trace Parkway
+Gulf Coast Network,GULN,PAAL_WQ,GULN WQ Monitoring at Palo Alto Battlefield N.H.P.
+Gulf Coast Network,GULN,PAIS_WQ,GULN WQ Monitoring at Padre Island National Seashore
+Gulf Coast Network,GULN,SAAN_WQ,GULN WQ Monitoring at San Antonio Missions N.H.P.
+Gulf Coast Network,GULN,VICK_WQ,GULN WQ Monitoring at Vicksburg National Military Park
+Heartland Network,HTLN,HTLN_WQ,HTLN WQ Monitoring
+Klamath Network,KLMN,KLMN0001,Stream Monitoring in Klamath Network Parks
+Klamath Network,KLMN,KLMN0002,Lake Monitoring in Klamath Network Parks
+Mid-Atlantic Network,MIDN,MIDN_APCO_WQ,Appomattox Court House National Historical Park Vital Signs Water Quality Monitoring
+Mid-Atlantic Network,MIDN,MIDN_BOWA_WQ,Booker T. Washington National Monument Vital Signs Water Quality Monitoring
+Mid-Atlantic Network,MIDN,MIDN_FISH_ATK_2008,Fish Inventories of Mid-Atlantic Network Parks
+Mid-Atlantic Network,MIDN,MIDN_FRSP_WQ,Fredericksburg and Spotsylvania County Battlefields Memorial National Military Park Vital Signs Water Quality Monitoring
+Mid-Atlantic Network,MIDN,MIDN_GETT_WQ,Gettysburg National Military Park and Eisenhower National Historic Site Vital Signs Water Quality Monitoring
+Mid-Atlantic Network,MIDN,MIDN_HOFU_WQ,Hopewell Furnace National Historic Site Vital Signs Water Quality Monitoring
+Mid-Atlantic Network,MIDN,MIDN_PETE_WQ,Petersburg National Battlefield Vital Signs Water Quality Monitoring
+Mid-Atlantic Network,MIDN,MIDN_RICH_WQ,Richmond National Battlefield Park Vital Signs Water Quality Monitoring
+National Capital Region Network,NCRN,NCRNWQ01,NCRN Perennial Nontidal Stream Chemistry Monitoring
+Northeast Coastal and Barrier Network,NCBN,NCBN_FISH_ATK_2008,Fish Inventories of Northeast Coastal and Barrier Network Parks
+Northeast Coastal and Barrier Network,NCBN,NCBN0001,Estuarine Nutrient Enrichment Monitoring in Coastal Parks
+Northeast Temperate Network,NETN,NETN_WQ,"Northeast Temperate Network lakes, ponds, and streams monitoring protocol"
+Northern Great Plains Network,NGPN,NGPN_CWM,Cave Water Monitoring in NGPN Cave Lakes
+Northern Great Plains Network,NGPN,NGPN0001,"Fish Inventories of 5 Parks in NGPN, White et al. 2002"
+Pacific Islands Network,PACN,ALKA_FIXED,Ala Kahakai National Historic Trail Fixed Stations
+Pacific Islands Network,PACN,AMME_FIXED,American Memorial Park Fixed Stations
+Pacific Islands Network,PACN,AMME_TEMP,American Memorial Park Temporary Stations
+Pacific Islands Network,PACN,HALE_FIXED,Haleakala National Park Fixed Stations
+Pacific Islands Network,PACN,HALE_TEMP,Haleakala National Park Temporary Stations
+Pacific Islands Network,PACN,HAVO_FIXED,Hawaii Volcanoes National Park Fixed Stations
+Pacific Islands Network,PACN,KAHO_FIXED,Kaloko-Honokohau National Historical Park Fixed Stations
+Pacific Islands Network,PACN,KAHO_TEMP,Kaloko-Honokohau National Historical Park Temporary Stations
+Pacific Islands Network,PACN,KALA_FIXED,Kalaupapa National Historical Park Fixed Stations
+Pacific Islands Network,PACN,KALA_TEMP,Kalaupapa National Historical Park Temporary Stations
+Pacific Islands Network,PACN,NPSA_FIXED,National Park of American Samoa Fixed Stations
+Pacific Islands Network,PACN,NPSA_TEMP,National Park of American Samoa Temporary Stations
+Pacific Islands Network,PACN,PACN_WELL,American Memorial Park and Kaloko-Honokohau National Historical Park Well Data
+Pacific Islands Network,PACN,PUHE_FIXED,Puukohola Heiau National Historic Site Fixed Stations
+Pacific Islands Network,PACN,PUHO_FIXED,Puuhonua o Honaunau National Historical Park Fixed Stations
+Pacific Islands Network,PACN,WAPA_FIXED,War in the Pacific National Historical Park Fixed Stations
+Pacific Islands Network,PACN,WAPA_TEMP,War in the Pacific National Historical Park Temporary Stations
+Rocky Mountain Network,ROMN,ROMN_SEI,ROMN Stream Ecological Integrity Monitoring
+San Francisco Bay Area Network,SFAN,PRSF_WQ,Presidio Trust Water Quality Monitoring
+San Francisco Bay Area Network,SFAN,SFAN_I&M,SFAN Long-Term Water Quality Monitoring Program
+San Francisco Bay Area Network,SFAN,SFAN_I&M_EXTRA,"SFAN Long-Term Water Quality Monitoring Program, Extra Sampling"
+San Francisco Bay Area Network,SFAN,SFAN_WQ,SFAN Pilot Monitoring for Freshwater Quality Protocol
+Sierra Nevada Network,SIEN,SIEN_LAKES,SIEN Lake Monitoring
+South Florida/Caribbean Network,SFCN,SFCN_SEAGRASS,Seagrass
+Southeast Coast Network,SECN,SECN_EWQM_FIXED,NPS SECN Estuarine Water Quality Monitoring - Fixed Station
+Southeast Coast Network,SECN,SECN_EWQM_FIXED_LEGACY,NPS SECN Estuarine Water Quality Monitoring - Fixed Station – Legacy
+Southeast Coast Network,SECN,SECNPRWQ,Assessing Coastal Waters at Southeast Coast Network Parks
+Southwest Alaska Network,SWAN,SWAN_KEFJ_2003-2004_SUMMERWQ,Summer Water Quality Survey at Kenai Fjords NP
